@@ -32,7 +32,11 @@ export type SimulationResult = {
  * @param seed Optional seed for reproducible results
  */
 export const createRng = (seed?: string) => {
-  return seedrandom(seed || 'default-seed');
+  if (seed) {
+    const rng = seedrandom(seed);
+    return () => rng();
+  }
+  return Math.random;
 };
 
 /**
@@ -211,6 +215,51 @@ export const calculateStatistics = (values: number[]): SimulationResult => {
 };
 
 /**
+ * Generate a time series of token price fluctuations using a Geometric Brownian Motion (GBM) model
+ * @param initialPrice Initial token price
+ * @param annualDrift Expected annual return (percentage)
+ * @param annualVolatility Annual volatility (percentage)
+ * @param timeSteps Number of time steps to generate
+ * @param timeStepInMonths Length of each time step in months
+ * @param rng Optional random number generator
+ */
+export const simulateTokenPriceFluctuations = (
+  initialPrice: number,
+  annualDrift: number,
+  annualVolatility: number,
+  timeSteps: number,
+  timeStepInMonths: number = 1,
+  rng = Math.random
+): number[] => {
+  // Convert annual parameters to the time step period
+  const timeStepInYears = timeStepInMonths / 12;
+  const drift = annualDrift * timeStepInYears;
+  const volatility = annualVolatility * Math.sqrt(timeStepInYears);
+  
+  // Initialize price array with initial price
+  const prices: number[] = [initialPrice];
+  
+  // Generate price path
+  for (let t = 1; t < timeSteps; t++) {
+    // Generate random normal return
+    const u1 = rng();
+    const u2 = rng();
+    const z = Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.PI * u2);
+    
+    // Calculate log return using the GBM model
+    const logReturn = (drift - 0.5 * volatility * volatility) + volatility * z;
+    
+    // Calculate new price
+    const prevPrice = prices[t - 1];
+    const newPrice = prevPrice * Math.exp(logReturn);
+    
+    prices.push(newPrice);
+  }
+  
+  return prices;
+};
+
+/**
  * Run a Monte Carlo simulation for token holder cash flows
  * @param params Simulation parameters
  * @param numSimulations Number of simulations to run
@@ -297,4 +346,72 @@ export const calculateMaxDrawdown = (values: number[]): number => {
   }
   
   return maxDrawdown;
+};
+
+/**
+ * Run a Monte Carlo simulation for token holder cash flows with token price fluctuations
+ * @param params Simulation parameters
+ * @param numSimulations Number of simulations to run
+ */
+export const simulateTokenHolderReturnsWithPriceFluctuations = (
+  params: {
+    pricePerToken: number;
+    monthlyLeasePerToken: number;
+    salvageValuePerToken: number;
+    months: number;
+    utilizationMean: number;
+    utilizationStd: number;
+    salvageValueMean: number;
+    salvageValueStd: number;
+    tokenPriceVolatility: number;  // Annual volatility percentage
+    tokenPriceDrift: number;       // Annual drift percentage
+    calculateReturnFn: (utilization: number, salvageRate: number, tokenPrices?: number[]) => number;
+  },
+  numSimulations: number = 1000
+): SimulationResult => {
+  const {
+    pricePerToken,
+    months,
+    utilizationMean,
+    utilizationStd,
+    salvageValueMean,
+    salvageValueStd,
+    tokenPriceVolatility,
+    tokenPriceDrift,
+    calculateReturnFn
+  } = params;
+  
+  const rng = createRng('token-holder-returns-price-fluctuations');
+  
+  // Run simulations
+  const returns: number[] = [];
+  
+  for (let i = 0; i < numSimulations; i++) {
+    // Generate random utilization rate for this simulation
+    const utilization = Math.max(0, Math.min(100, 
+      generateNormalDistribution(utilizationMean, utilizationStd, 1, rng)[0]
+    ));
+    
+    // Generate random salvage value for this simulation
+    const salvageRate = Math.max(0, Math.min(100,
+      generateNormalDistribution(salvageValueMean, salvageValueStd, 1, rng)[0]
+    ));
+    
+    // Simulate token price fluctuations
+    const tokenPrices = simulateTokenPriceFluctuations(
+      pricePerToken,
+      tokenPriceDrift,
+      tokenPriceVolatility,
+      months,
+      1, // Monthly time steps
+      rng
+    );
+    
+    // Calculate return for this simulation using the provided function
+    const simulatedReturn = calculateReturnFn(utilization, salvageRate, tokenPrices);
+    returns.push(simulatedReturn);
+  }
+  
+  // Calculate statistics
+  return calculateStatistics(returns);
 }; 

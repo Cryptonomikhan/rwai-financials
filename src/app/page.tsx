@@ -20,6 +20,7 @@ import {
 // Add Monte Carlo imports
 import MonteCarloChart from '@/components/ui/monte-carlo-chart';
 import * as MonteCarloSim from '@/lib/monte-carlo';
+import { Switch } from '@/components/ui/switch';
 
 ChartJS.register(ArcElement, CategoryScale, LinearScale, BarElement, Tooltip, PointElement, LineElement, Legend);
 
@@ -165,6 +166,73 @@ const calculateNPV = (cashFlows: number[], discountRate: number): number => {
   }, 0);
 };
 
+// Enhanced NPV function with variable discount rates
+const calculateEnhancedNPV = (cashFlows: number[], discountRates: number[]): number => {
+  return cashFlows.reduce((npv, cashFlow, t) => {
+    // Use the discount rate for the current period or the last provided rate
+    const periodRate = t < discountRates.length ? discountRates[t] : discountRates[discountRates.length - 1];
+    return npv + cashFlow / Math.pow(1 + periodRate, t/12);
+  }, 0);
+};
+
+// Calculate Modified Internal Rate of Return (MIRR)
+const calculateMIRR = (
+  cashFlows: number[], 
+  financeRate: number, 
+  reinvestRate: number
+): number => {
+  const negativeCashFlows = cashFlows.map(cf => cf < 0 ? -cf : 0);
+  const positiveCashFlows = cashFlows.map(cf => cf > 0 ? cf : 0);
+  
+  // Present value of negative cash flows at finance rate
+  const pvNegative = negativeCashFlows.reduce((pv, cf, t) => {
+    return pv + cf / Math.pow(1 + financeRate, t/12);
+  }, 0);
+  
+  // Future value of positive cash flows at reinvestment rate
+  const fvPositive = positiveCashFlows.reduce((fv, cf, t) => {
+    const periodsToEnd = cashFlows.length - 1 - t;
+    return fv + cf * Math.pow(1 + reinvestRate, periodsToEnd/12);
+  }, 0);
+  
+  // Calculate MIRR
+  const n = (cashFlows.length - 1) / 12; // Convert months to years
+  return Math.pow(fvPositive / pvNegative, 1/n) - 1;
+};
+
+// Calculate Weighted Average Cost of Capital (WACC)
+const calculateWACC = (
+  equityPercentage: number, 
+  costOfEquity: number, 
+  debtPercentage: number, 
+  costOfDebt: number, 
+  taxRate: number
+): number => {
+  return (equityPercentage * costOfEquity) + (debtPercentage * costOfDebt * (1 - taxRate));
+};
+
+// Calculate Discounted Payback Period
+const calculateDiscountedPaybackPeriod = (
+  cashFlows: number[], 
+  discountRate: number
+): number => {
+  const discountedCashFlows = cashFlows.map((cf, t) => cf / Math.pow(1 + discountRate, t/12));
+  
+  let cumulativeDiscountedCashFlow = 0;
+  for (let t = 0; t < discountedCashFlows.length; t++) {
+    cumulativeDiscountedCashFlow += discountedCashFlows[t];
+    if (cumulativeDiscountedCashFlow >= 0) {
+      if (t === 0) return 0;
+      
+      // Linear interpolation for fractional period
+      const previousCF = cumulativeDiscountedCashFlow - discountedCashFlows[t];
+      const fraction = -previousCF / discountedCashFlows[t];
+      return t - 1 + fraction;
+    }
+  }
+  return -1; // Payback not achieved
+};
+
 const calculateMOIC = (totalReturn: number, initialInvestment: number): number => {
   return totalReturn / initialInvestment;
 };
@@ -197,14 +265,35 @@ const FinancialDashboard = () => {
   const [discountRate, setDiscountRate] = useState<number>(12); // annual discount rate (%)
   const [showAdvancedMetrics, setShowAdvancedMetrics] = useState<boolean>(false);
   const [selectedSensitivityVariable, setSelectedSensitivityVariable] = useState<string>("utilizationRate");
-
+  
+  // New state for advanced DCF analysis
+  const [useVariableDiscountRate, setUseVariableDiscountRate] = useState<boolean>(false);
+  const [yearlyDiscountRates, setYearlyDiscountRates] = useState<number[]>([12, 12, 12, 12, 12]); // One rate per year
+  const [useWACC, setUseWACC] = useState<boolean>(false);
+  const [equityPercentage, setEquityPercentage] = useState<number>(70);
+  const [costOfEquity, setCostOfEquity] = useState<number>(15);
+  const [debtPercentage, setDebtPercentage] = useState<number>(30);
+  const [costOfDebt, setCostOfDebt] = useState<number>(8);
+  const [taxRate, setTaxRate] = useState<number>(21);
+  const [financeRate, setFinanceRate] = useState<number>(6);
+  const [reinvestRate, setReinvestRate] = useState<number>(4);
+  
+  // State for enhanced metrics results
+  const [enhancedNPV, setEnhancedNPV] = useState<number>(0);
+  const [mirrValue, setMirrValue] = useState<number>(0);
+  const [waccValue, setWaccValue] = useState<number>(0);
+  const [discountedPaybackPeriod, setDiscountedPaybackPeriod] = useState<number>(0);
+  
   // Risk Assessment / Monte Carlo state
   const [showRiskAssessment, setShowRiskAssessment] = useState<boolean>(false);
+  const [simulationMetric, setSimulationMetric] = useState<string>("IRR");
+  const [utilizationStdDev, setUtilizationStdDev] = useState<number>(10);
+  const [salvageStdDev, setSalvageStdDev] = useState<number>(5);
   const [monteCarloSimulations, setMonteCarloSimulations] = useState<number>(1000);
-  const [utilizationStdDev, setUtilizationStdDev] = useState<number>(15); // standard deviation for utilization
-  const [salvageStdDev, setSalvageStdDev] = useState<number>(5); // standard deviation for salvage rate
   const [simulationResults, setSimulationResults] = useState<MonteCarloSim.SimulationResult | null>(null);
-  const [simulationMetric, setSimulationMetric] = useState<string>("IRR"); // Which metric to simulate (IRR, ROI, MonthlyLease)
+  const [enableTokenPriceFluctuations, setEnableTokenPriceFluctuations] = useState<boolean>(false);
+  const [tokenPriceVolatility, setTokenPriceVolatility] = useState<number>(30);
+  const [tokenPriceDrift, setTokenPriceDrift] = useState<number>(5);
   
   // Scenario Analysis state
   const [showScenarios, setShowScenarios] = useState<boolean>(false);
@@ -394,8 +483,10 @@ const FinancialDashboard = () => {
   
   // Sensitivity analysis
   const generateSensitivityData = () => {
-    // Generate variations of the selected variable
-    const variations = [];
+    const variations: any[] = [];
+    
+    // Don't try to use tokenPrices at all in this function
+    // Just use salvage value in all cases
     
     if (selectedSensitivityVariable === "utilizationRate") {
       // Generate 5 utilization rate variations from 20% to 100%
@@ -434,21 +525,30 @@ const FinancialDashboard = () => {
         const scenarioFinalPerTokenMonthlyLease = Math.max(0, scenarioEffectivePerTokenMonthlyLease);
         
         // Calculate IRR for this scenario
-        const scenarioCashFlows = [-pricePerToken];
+        const scenarioCashFlows: number[] = [-pricePerToken];
         for (let i = 0; i < 60; i++) {
           scenarioCashFlows.push(scenarioFinalPerTokenMonthlyLease);
         }
+        
+        // If token price fluctuations are enabled, we still just use salvage value
+        // since tokenPrices won't be available until the simulation runs
         scenarioCashFlows[scenarioCashFlows.length - 1] += salvageValuePerToken;
         
         const scenarioIRR = calculateIRR(scenarioCashFlows, 0.1) * 100;
-        const scenarioNPV = calculateNPV(scenarioCashFlows, discountRate / 100);
+        
+        // Always use salvage value in this function
+        const finalValue = salvageValuePerToken;
+        
+        const scenarioTotalReturn = (scenarioEffectivePerTokenMonthlyLease * 60) + finalValue;
+        const scenarioNetGain = scenarioTotalReturn - pricePerToken;
+        const scenarioROIPercent = (scenarioNetGain / pricePerToken) * 100;
         
         variations.push({
           value: rate,
           irr: scenarioIRR,
-          npv: scenarioNPV,
+          npv: scenarioNOI,
           monthlyLease: scenarioFinalPerTokenMonthlyLease,
-          roi: scenarioROI
+          roi: scenarioROIPercent
         });
       }
     } else if (selectedSensitivityVariable === "splitRatio") {
@@ -490,6 +590,8 @@ const FinancialDashboard = () => {
         for (let i = 0; i < 60; i++) {
           scenarioCashFlows.push(scenarioFinalPerTokenMonthlyLease);
         }
+        
+        // Always use salvage value
         scenarioCashFlows[scenarioCashFlows.length - 1] += salvageValuePerToken;
         
         const scenarioIRR = calculateIRR(scenarioCashFlows, 0.1) * 100;
@@ -541,6 +643,8 @@ const FinancialDashboard = () => {
         for (let i = 0; i < 60; i++) {
           scenarioCashFlows.push(scenarioFinalPerTokenMonthlyLease);
         }
+        
+        // Always use salvage value 
         scenarioCashFlows[scenarioCashFlows.length - 1] += salvageValuePerToken;
         
         const scenarioIRR = calculateIRR(scenarioCashFlows, 0.1) * 100;
@@ -578,7 +682,7 @@ const FinancialDashboard = () => {
   // Monte Carlo simulation function
   const runMonteCarloSimulation = () => {
     // Define a function that calculates the selected metric based on simulation parameters
-    const calculateMetricForSimulation = (simUtilization: number, simSalvageRate: number): number => {
+    const calculateMetricForSimulation = (simUtilization: number, simSalvageRate: number, tokenPrices?: number[]): number => {
       // Create a scenario with this utilization rate
       const scenarioUtilizationHours = (simUtilization / 100) * hoursPerYear;
       const scenarioInferenceHours = (splitRatio / 100) * scenarioUtilizationHours;
@@ -617,12 +721,25 @@ const FinancialDashboard = () => {
       for (let i = 0; i < 60; i++) {
         scenarioCashFlows.push(scenarioEffectivePerTokenMonthlyLease);
       }
-      scenarioCashFlows[scenarioCashFlows.length - 1] += scenarioSalvageValuePerToken;
+      
+      // If token price fluctuations are enabled and we have token prices, use the final token price
+      // as the exit value instead of the salvage value
+      if (tokenPrices &&enableTokenPriceFluctuations) {
+        // The last token price becomes the exit value, replacing the salvage value
+        scenarioCashFlows[scenarioCashFlows.length - 1] = scenarioEffectivePerTokenMonthlyLease + tokenPrices[tokenPrices.length - 1];
+      } else {
+        // Otherwise add the salvage value to the final payment
+        scenarioCashFlows[scenarioCashFlows.length - 1] += scenarioSalvageValuePerToken;
+      }
       
       const scenarioIRR = calculateIRR(scenarioCashFlows, 0.1) * 100;
       
       // Calculate ROI with progressive sharing
-      const scenarioTotalReturn = (scenarioEffectivePerTokenMonthlyLease * 60) + scenarioSalvageValuePerToken;
+      const finalValue = tokenPrices && enableTokenPriceFluctuations 
+        ? tokenPrices[tokenPrices.length - 1] // Use final token price if fluctuations enabled
+        : scenarioSalvageValuePerToken; // Otherwise use salvage value
+        
+      const scenarioTotalReturn = (scenarioEffectivePerTokenMonthlyLease * 60) + finalValue;
       const scenarioNetGain = scenarioTotalReturn - pricePerToken;
       const scenarioROIPercent = (scenarioNetGain / pricePerToken) * 100;
       
@@ -642,21 +759,41 @@ const FinancialDashboard = () => {
     };
     
     // Run the Monte Carlo simulation with the current parameters
-    const results = MonteCarloSim.simulateTokenHolderReturns(
-      {
-        pricePerToken,
-        monthlyLeasePerToken: effectivePerTokenMonthlyLease,
-        salvageValuePerToken,
-        months: 60,
-        utilizationMean: utilizationRate,
-        utilizationStd: utilizationStdDev,
-        salvageValueMean: salvageRate,
-        salvageValueStd: salvageStdDev,
-        progressiveNOI,
-        calculateReturnFn: calculateMetricForSimulation
-      },
-      monteCarloSimulations
-    );
+    let results;
+    if (enableTokenPriceFluctuations) {
+      results = MonteCarloSim.simulateTokenHolderReturnsWithPriceFluctuations(
+        {
+          pricePerToken,
+          monthlyLeasePerToken: effectivePerTokenMonthlyLease,
+          salvageValuePerToken,
+          months: 60,
+          utilizationMean: utilizationRate,
+          utilizationStd: utilizationStdDev,
+          salvageValueMean: salvageRate,
+          salvageValueStd: salvageStdDev,
+          tokenPriceVolatility,
+          tokenPriceDrift,
+          calculateReturnFn: calculateMetricForSimulation
+        },
+        monteCarloSimulations
+      );
+    } else {
+      results = MonteCarloSim.simulateTokenHolderReturns(
+        {
+          pricePerToken,
+          monthlyLeasePerToken: effectivePerTokenMonthlyLease,
+          salvageValuePerToken,
+          months: 60,
+          utilizationMean: utilizationRate,
+          utilizationStd: utilizationStdDev,
+          salvageValueMean: salvageRate,
+          salvageValueStd: salvageStdDev,
+          progressiveNOI,
+          calculateReturnFn: calculateMetricForSimulation
+        },
+        monteCarloSimulations
+      );
+    }
     
     // Update the state with the simulation results
     setSimulationResults(results);
@@ -714,7 +851,15 @@ const FinancialDashboard = () => {
   };
 
   // Scenario analysis calculations
-  const calculateScenarioResults = (scenarioValue: number, scenarioType: string) => {
+  const calculateScenarioResults = (scenarioValue: number, scenarioType: string, tokenPrices?: number[]) => {
+    // Check if tokenPrices parameter is provided and not empty (once at the beginning)
+    const hasTokenPrices = tokenPrices && tokenPrices.length > 0;
+    
+    // Rest of the function using the single hasTokenPrices declaration
+    let scenarioSalvageValuePerToken: number;
+    let scenarioEffectivePerTokenMonthlyLease: number;
+    let scenarioPricePerToken: number;
+    
     // Clone current state
     let scenarioUtilization = utilizationRate;
     let scenarioSalvage = salvageRate;
@@ -743,8 +888,8 @@ const FinancialDashboard = () => {
     const scenarioRwaiROI = (scenarioNOI / scenarioTotalExpenses) * 100;
     
     // Token holder metrics
-    const scenarioPricePerToken = scenarioFractionalPrice / tokensPerBox;
-    const scenarioSalvageValuePerToken = (scenarioSalvage / 100) * model.rwaiCost / tokensPerBox;
+    scenarioSalvageValuePerToken = (scenarioSalvage / 100) * model.rwaiCost / tokensPerBox;
+    scenarioPricePerToken = scenarioFractionalPrice / tokensPerBox;
     
     // Calculate progressive NOI sharing for this scenario if enabled
     const scenarioProgressiveSharePercentage = calculateProgressiveSharePercentage(scenarioRwaiROI);
@@ -760,7 +905,7 @@ const FinancialDashboard = () => {
     const scenarioProgressivePerTokenMonthlyLease = scenarioProgressiveMonthlyPayment / tokensPerBox;
     
     // Use progressive or standard lease payment based on toggle
-    const scenarioEffectivePerTokenMonthlyLease = progressiveNOI 
+    scenarioEffectivePerTokenMonthlyLease = progressiveNOI 
       ? scenarioProgressivePerTokenMonthlyLease 
       : perTokenMonthlyLease;
     
@@ -772,13 +917,28 @@ const FinancialDashboard = () => {
     for (let i = 0; i < 60; i++) {
       scenarioCashFlows.push(scenarioFinalPerTokenMonthlyLease);
     }
-    scenarioCashFlows[scenarioCashFlows.length - 1] += scenarioSalvageValuePerToken;
+    
+    // If token price fluctuations are enabled, adjust the final value
+    // Check if tokenPrices parameter is provided and not empty
+    if (hasTokenPrices && enableTokenPriceFluctuations) {
+      // The last token price becomes the exit value, replacing the salvage value
+      scenarioCashFlows[scenarioCashFlows.length - 1] = scenarioEffectivePerTokenMonthlyLease + tokenPrices[tokenPrices.length - 1];
+    } else {
+      // Otherwise add the salvage value to the final payment
+      scenarioCashFlows[scenarioCashFlows.length - 1] += scenarioSalvageValuePerToken;
+    }
+    
     const scenarioIRR = calculateIRR(scenarioCashFlows, 0.1) * 100;
     
-    // Calculate ROI with progressive sharing if enabled
-    const scenarioTotalReturn = (scenarioFinalPerTokenMonthlyLease * 60) + scenarioSalvageValuePerToken;
-    const scenarioNetGain = scenarioTotalReturn - scenarioPricePerToken;
-    const scenarioSimpleROI = (scenarioNetGain / scenarioPricePerToken) * 100;
+    // Calculate ROI with progressive sharing
+    // Check if tokenPrices parameter is provided and not empty
+    const finalValue = hasTokenPrices && enableTokenPriceFluctuations 
+      ? tokenPrices[tokenPrices.length - 1] // Use final token price if fluctuations enabled
+      : scenarioSalvageValuePerToken; // Otherwise use salvage value
+      
+    const scenarioTotalReturn = (scenarioEffectivePerTokenMonthlyLease * 60) + finalValue;
+    const scenarioNetGain = scenarioTotalReturn - pricePerToken;
+    const scenarioSimpleROI = (scenarioNetGain / pricePerToken) * 100;
     
     return {
       rwaiROI: scenarioRwaiROI,
@@ -889,6 +1049,77 @@ const FinancialDashboard = () => {
 
   // Helper to format percentages
   const toPercent = (val: number) => `${val.toFixed(0)}%`;
+
+  // Calculate WACC value whenever inputs change
+  useEffect(() => {
+    if (useWACC) {
+      const calculatedWACC = calculateWACC(
+        equityPercentage / 100, 
+        costOfEquity / 100, 
+        debtPercentage / 100, 
+        costOfDebt / 100, 
+        taxRate / 100
+      );
+      setWaccValue(calculatedWACC * 100);
+      
+      // Update discount rate based on WACC
+      setDiscountRate(Math.round(calculatedWACC * 100));
+    }
+  }, [useWACC, equityPercentage, costOfEquity, debtPercentage, costOfDebt, taxRate]);
+  
+  // Calculate enhanced financial metrics
+  useEffect(() => {
+    // Only calculate if advanced metrics are shown
+    if (showAdvancedMetrics) {
+      // Convert yearly discount rates to monthly for the enhanced NPV calculation
+      const monthlyDiscountRates: number[] = [];
+      yearlyDiscountRates.forEach(yearRate => {
+        // Convert each yearly rate to 12 monthly rates
+        for (let i = 0; i < 12; i++) {
+          monthlyDiscountRates.push(yearRate / 100);
+        }
+      });
+      
+      // Get the appropriate cash flows based on progressive NOI setting
+      const cashFlowsToUse = progressiveNOI ? progressiveCashFlows : cashFlows;
+      
+      // Calculate enhanced NPV with variable rates if enabled
+      const npvValue = useVariableDiscountRate 
+        ? calculateEnhancedNPV(cashFlowsToUse, monthlyDiscountRates) 
+        : npv;
+      setEnhancedNPV(npvValue);
+      
+      // Calculate MIRR
+      const mirrResult = calculateMIRR(
+        cashFlowsToUse, 
+        financeRate / 100, 
+        reinvestRate / 100
+      );
+      setMirrValue(mirrResult * 100);
+      
+      // Calculate discounted payback period
+      const discountedPBP = calculateDiscountedPaybackPeriod(
+        cashFlowsToUse, 
+        discountRate / 100
+      );
+      setDiscountedPaybackPeriod(discountedPBP);
+    }
+  }, [
+    showAdvancedMetrics, 
+    progressiveNOI,
+    cashFlows,
+    progressiveCashFlows,
+    useVariableDiscountRate, 
+    yearlyDiscountRates, 
+    discountRate, 
+    financeRate, 
+    reinvestRate, 
+    npv
+  ]);
+
+  // Add default empty tokenPrices array for usage in functions
+  const tokenPrices: number[] = []; // Initialize as empty array instead of false
+  // Using the existing enableTokenPriceFluctuations state variable - no need to redeclare
 
   return (
     <div className="min-h-screen p-4 md:p-8 bg-gray-50">
@@ -1450,6 +1681,64 @@ const FinancialDashboard = () => {
                   More simulations provide more accurate results but take longer to compute
                 </p>
               </div>
+              
+              <div className="col-span-1 md:col-span-2 pt-4 border-t mt-4">
+                <div className="flex items-center mb-4">
+                  <input
+                    type="checkbox"
+                    id="enable-token-price-fluctuations"
+                    checked={enableTokenPriceFluctuations}
+                    onChange={(e) => setEnableTokenPriceFluctuations(e.target.checked)}
+                    className="mr-2"
+                  />
+                  <label 
+                    htmlFor="enable-token-price-fluctuations" 
+                    className="font-medium"
+                  >
+                    Enable Token Price Fluctuations
+                  </label>
+                </div>
+                
+                {enableTokenPriceFluctuations && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div>
+                      <label className="block mb-2">Token Price Volatility (%)</label>
+                      <div className="flex items-center">
+                        <Slider
+                          value={[tokenPriceVolatility]}
+                          onValueChange={([value]: number[]) => setTokenPriceVolatility(value)}
+                          min={5}
+                          max={100}
+                          step={1}
+                          className="w-full mr-4"
+                        />
+                        <span className="text-sm">{tokenPriceVolatility.toFixed(0)}%</span>
+                      </div>
+                      <p className="text-xs text-gray-500 mt-1">
+                        Annual volatility of token price (higher = more price movement)
+                      </p>
+                    </div>
+                    
+                    <div>
+                      <label className="block mb-2">Token Price Drift (%)</label>
+                      <div className="flex items-center">
+                        <Slider
+                          value={[tokenPriceDrift]}
+                          onValueChange={([value]: number[]) => setTokenPriceDrift(value)}
+                          min={-20}
+                          max={20}
+                          step={1}
+                          className="w-full mr-4"
+                        />
+                        <span className="text-sm">{tokenPriceDrift > 0 ? '+' : ''}{tokenPriceDrift.toFixed(0)}%</span>
+                      </div>
+                      <p className="text-xs text-gray-500 mt-1">
+                        Annual expected change in token price (positive = growth, negative = decline)
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
             
             {simulationResults && (
@@ -1599,6 +1888,223 @@ const FinancialDashboard = () => {
                                              selectedSensitivityVariable === "inferencePrice" ? "Inference Price" :
                                              "Discount Rate"} impact IRR and NPV.
                 </p>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {showAdvancedMetrics && (
+          <Card className="mt-6">
+            <CardHeader>
+              <CardTitle>Advanced Financial Analysis</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              {/* DCF Analysis Controls */}
+              <div className="p-4 border rounded-lg bg-white shadow-sm">
+                <h3 className="text-lg font-medium mb-4">DCF Analysis Configuration</h3>
+                
+                {/* Variable Discount Rate Toggle */}
+                <div className="mb-4">
+                  <label className="flex items-center space-x-2 mb-2">
+                    <input 
+                      type="checkbox" 
+                      checked={useVariableDiscountRate}
+                      onChange={() => setUseVariableDiscountRate(!useVariableDiscountRate)}
+                      className="form-checkbox h-5 w-5 text-blue-600"
+                    />
+                    <span>Use Variable Discount Rates</span>
+                  </label>
+                  
+                  {useVariableDiscountRate && (
+                    <div className="pl-7 space-y-2">
+                      <p className="text-sm text-gray-500 mb-2">Set discount rate for each year:</p>
+                      <div className="grid grid-cols-5 gap-2">
+                        {yearlyDiscountRates.map((rate, index) => (
+                          <div key={index} className="flex flex-col">
+                            <label className="text-xs text-gray-500">Year {index + 1}</label>
+                            <input 
+                              type="number" 
+                              value={rate}
+                              min="0"
+                              max="100"
+                              onChange={(e) => {
+                                const newRates = [...yearlyDiscountRates];
+                                newRates[index] = parseFloat(e.target.value) || 0;
+                                setYearlyDiscountRates(newRates);
+                              }}
+                              className="p-1 border rounded text-sm w-full"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* WACC Calculator Toggle */}
+                <div className="mb-4">
+                  <label className="flex items-center space-x-2 mb-2">
+                    <input 
+                      type="checkbox" 
+                      checked={useWACC}
+                      onChange={() => setUseWACC(!useWACC)}
+                      className="form-checkbox h-5 w-5 text-blue-600"
+                    />
+                    <span>Calculate Using WACC</span>
+                  </label>
+                  
+                  {useWACC && (
+                    <div className="pl-7 space-y-3">
+                      <p className="text-sm text-gray-500 mb-2">WACC Parameters:</p>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <label className="text-sm">Equity %</label>
+                          <Slider
+                            value={[equityPercentage]}
+                            onValueChange={([value]: number[]) => {
+                              setEquityPercentage(value);
+                              setDebtPercentage(100 - value);
+                            }}
+                            min={0}
+                            max={100}
+                            step={1}
+                            className="my-2"
+                          />
+                          <div className="flex justify-between">
+                            <span className="text-xs">{equityPercentage}%</span>
+                          </div>
+                        </div>
+                        <div>
+                          <label className="text-sm">Debt %</label>
+                          <Slider
+                            value={[debtPercentage]}
+                            onValueChange={([value]: number[]) => {
+                              setDebtPercentage(value);
+                              setEquityPercentage(100 - value);
+                            }}
+                            min={0}
+                            max={100}
+                            step={1}
+                            className="my-2"
+                          />
+                          <div className="flex justify-between">
+                            <span className="text-xs">{debtPercentage}%</span>
+                          </div>
+                        </div>
+                        <div>
+                          <label className="text-sm">Cost of Equity %</label>
+                          <Slider
+                            value={[costOfEquity]}
+                            onValueChange={([value]: number[]) => setCostOfEquity(value)}
+                            min={0}
+                            max={30}
+                            step={0.1}
+                            className="my-2"
+                          />
+                          <div className="flex justify-between">
+                            <span className="text-xs">{costOfEquity.toFixed(1)}%</span>
+                          </div>
+                        </div>
+                        <div>
+                          <label className="text-sm">Cost of Debt %</label>
+                          <Slider
+                            value={[costOfDebt]}
+                            onValueChange={([value]: number[]) => setCostOfDebt(value)}
+                            min={0}
+                            max={20}
+                            step={0.1}
+                            className="my-2"
+                          />
+                          <div className="flex justify-between">
+                            <span className="text-xs">{costOfDebt.toFixed(1)}%</span>
+                          </div>
+                        </div>
+                        <div>
+                          <label className="text-sm">Tax Rate %</label>
+                          <Slider
+                            value={[taxRate]}
+                            onValueChange={([value]: number[]) => setTaxRate(value)}
+                            min={0}
+                            max={40}
+                            step={0.5}
+                            className="my-2"
+                          />
+                          <div className="flex justify-between">
+                            <span className="text-xs">{taxRate.toFixed(1)}%</span>
+                          </div>
+                        </div>
+                        <div className="flex items-center justify-center">
+                          <div className="bg-blue-50 p-3 rounded-lg text-center">
+                            <p className="text-xs text-gray-600">Calculated WACC</p>
+                            <p className="text-lg font-bold text-blue-800">{waccValue.toFixed(2)}%</p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+                
+                {/* MIRR Parameters */}
+                <div className="mb-4">
+                  <h4 className="text-md font-medium mb-2">MIRR Parameters</h4>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="text-sm">Finance Rate %</label>
+                      <Slider
+                        value={[financeRate]}
+                        onValueChange={([value]: number[]) => setFinanceRate(value)}
+                        min={0}
+                        max={20}
+                        step={0.5}
+                        className="my-2"
+                      />
+                      <div className="flex justify-between">
+                        <span className="text-xs">{financeRate.toFixed(1)}%</span>
+                      </div>
+                    </div>
+                    <div>
+                      <label className="text-sm">Reinvestment Rate %</label>
+                      <Slider
+                        value={[reinvestRate]}
+                        onValueChange={([value]: number[]) => setReinvestRate(value)}
+                        min={0}
+                        max={20}
+                        step={0.5}
+                        className="my-2"
+                      />
+                      <div className="flex justify-between">
+                        <span className="text-xs">{reinvestRate.toFixed(1)}%</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              
+              {/* Advanced Financial Metrics Results */}
+              <div className="p-4 border rounded-lg bg-white shadow-sm">
+                <h3 className="text-lg font-medium mb-4">Advanced Financial Metrics</h3>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <div className="p-4 bg-gray-50 rounded-lg">
+                    <p className="text-gray-500 text-sm">Enhanced NPV</p>
+                    <p className="text-xl font-bold">${enhancedNPV.toFixed(2)}</p>
+                    <p className="text-xs text-gray-500">{useVariableDiscountRate ? 'Variable rates' : 'Standard rate'}</p>
+                  </div>
+                  <div className="p-4 bg-gray-50 rounded-lg">
+                    <p className="text-gray-500 text-sm">Modified IRR (MIRR)</p>
+                    <p className="text-xl font-bold">{mirrValue.toFixed(2)}%</p>
+                    <p className="text-xs text-gray-500">Finance: {financeRate}% / Reinvest: {reinvestRate}%</p>
+                  </div>
+                  <div className="p-4 bg-gray-50 rounded-lg">
+                    <p className="text-gray-500 text-sm">Discounted Payback Period</p>
+                    <p className="text-xl font-bold">{discountedPaybackPeriod.toFixed(1)} months</p>
+                    <p className="text-xs text-gray-500">Time to recover investment (discounted)</p>
+                  </div>
+                  <div className="p-4 bg-gray-50 rounded-lg">
+                    <p className="text-gray-500 text-sm">Profitability Index</p>
+                    <p className="text-xl font-bold">{(enhancedNPV / pricePerToken + 1).toFixed(2)}</p>
+                    <p className="text-xs text-gray-500">Present Value / Initial Investment</p>
+                  </div>
+                </div>
               </div>
             </CardContent>
           </Card>
